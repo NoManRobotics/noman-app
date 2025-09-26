@@ -1,39 +1,17 @@
-# Noman-app
-
 <div align="right">
 
 [English](README.md) | [中文](README.zh-CN.md)
 
 </div>
 
-<div align="left">
-  <a href="https://nomanrobotics.com/techsupport/">
-    <img src="src/assets/icons/desktop_icon.png" alt="技术支持" width="50" height="50">
-  </a>
+<div align="center">
+  <img src="src/assets/icons/noman-app-banner.jpg" alt="Noman App Banner">
 </div>
 
-## 目录
+Noman-app是一个轻量级、跨平台的机械臂用户界面，使用Python/Cython实现。它提供了路径规划、碰撞避免和自动化的解决方案，是MoveIt和Pinocchio等工具的替代选择。后端结合了路径规划和自动化功能，如PTP、LIN和CIRC运动，这些通常在KRL和RoboDK等工业级应用中看到。
 
-- [注意](#注意)
-- [安装](#安装)
-- [主要功能](#主要功能)
-- [支持](#支持)
-- [待办事项](#to-dos)
-- [致谢](#credits-updated-by-18062025)
+**注意：**这是我们的第一个版本，仍在开发中。
 
-Noman-app是一个轻量级、跨平台的机械臂用户界面，使用Python实现。它提供了路径规划、碰撞避免和自动化的解决方案，是MoveIt和Pinocchio等工具的替代选择。后端结合了路径规划和自动化功能，如PTP、LIN和CIRC运动，这些通常在KRL和RoboDK等工业级应用中看到。
-
-它连接到真实机械臂进行仿真。路线图如下：
-
---> 带舵机的机械臂（UART），提供位置反馈
-
-----> 带步进电机的机械臂（CAN、UART），提供位置和速度控制
-
--------> 支持扭矩控制的电机机械臂
-
-
-## 注意
-这是我们的第一个版本，仍在开发中。
 
 ## 安装
 
@@ -45,7 +23,9 @@ pip install [WHEEL-NAME] # 您需要从发布页面下载.whl文件
 python src/main.py
 ```
 
-对于喜欢按操作系统下载应用程序的用户，请从最新发布页面下载可执行文件。
+对于喜欢按操作系统下载应用程序的用户，请从[最新发布页面](https://github.com/NoManRobotics/noman-app/releases)下载可执行文件。
+
+[all-wheels](https://github.com/NoManRobotics/noman-app/releases)压缩包也可在发布页面获取，如果您使用终端，必须安装与您操作系统匹配的特定.whl文件。
 
 **Linux用户**需要取消网络代理设置以避免openai方案问题：
 
@@ -62,6 +42,7 @@ unset all_proxy; unset ALL_PROXY
 | **机器人编程语言** | - 执行G代码命令（PTP、LIN、CIRC、HOME、DELAY、TOOL、M280）<br>- 示教编程<br>- Text2gcode绘图任务 |
 | **轨迹优化** | - 笛卡尔空间：线性插值和三次B样条<br>- 关节空间：梯形、S曲线和多项式 |
 | **仿真器** | - 基于PyBullet的仿真环境<br>- 支持导入URDF/STL/OBJ格式对象和内置几何形状<br>- 工具中心点偏移和基座位置配置 |
+| **协议支持** | 为提供从仿真到真实机器人的无缝体验，我们开发了<br>- UART串口协议<br>- CAN等协议（尚未支持） |
 
 
 
@@ -72,13 +53,13 @@ unset all_proxy; unset ALL_PROXY
 ## TO-DOs
 Priority 1 Basic Supports
 
-- [x] speed control range to parametric
 - [x] add detector types, including template matching, color detector.
 - [x] Replay with speed control
 - [x] Optimise text2gcode gcode trajectory
-- [X] Move sys-path and initialise to config.
 - [x] Detect and grab.
-- [x] Make command look-up a same class file in controller frame and anytroller from
+- [x] Added build-in cartesian interpolator during planer.plan stage (pathpoints)
+- [x] Support custom solver added by user.
+- [x] Make command look-up a same class file in controller frame and anytroller frame
 - [ ] Test the software on Parol6 stepper motors.
 - [x] languange support in sub-frames
 - [x] MacOS simulator gui fix, shape loading.
@@ -87,6 +68,8 @@ Priority 1 Basic Supports
 - [ ] user can add world/tool coordinate systems
 - [x] Trajectory Optimiser in joint space and cartesian space.
 - [x] setting: individial speed/acc/jerk setting, real-time optimiser method switch.
+- [ ] Upon joint position control, user can choose to output joint speed in planner output
+- [ ] LIN/CIRC require time parameterization, and use jacobian to optimise joint speed
 
 
 Priority 2 Advanced features
@@ -101,7 +84,7 @@ Priority 2 Advanced features
 - [x] add phone as a camera for the robot arm
 - [ ] tic tac tok.
 - [ ] multi-robot tasking
-- [ ] point cloud.
+- [ ] point cloud (pyzed)
 - [ ] Spatial AI
 
 
