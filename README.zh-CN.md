@@ -6,6 +6,21 @@
 
 </div>
 
+<div align="left">
+  <a href="https://nomanrobotics.com/techsupport/">
+    <img src="src/assets/icons/desktop_icon.png" alt="技术支持" width="50" height="50">
+  </a>
+</div>
+
+## 目录
+
+- [注意](#注意)
+- [安装](#安装)
+- [主要功能](#主要功能)
+- [支持](#支持)
+- [待办事项](#to-dos)
+- [致谢](#credits-updated-by-18062025)
+
 Noman-app是一个轻量级、跨平台的机械臂用户界面，使用Python实现。它提供了路径规划、碰撞避免和自动化的解决方案，是MoveIt和Pinocchio等工具的替代选择。后端结合了路径规划和自动化功能，如PTP、LIN和CIRC运动，这些通常在KRL和RoboDK等工业级应用中看到。
 
 它连接到真实机械臂进行仿真。路线图如下：
@@ -40,40 +55,15 @@ unset all_proxy; unset ALL_PROXY
 
 ## 主要功能
 
-### 机器人配置
-上传URDF/Xacro文件，配置关节限制、初始位置和工具中心点偏移，兼容第三方机械臂
+| 功能 | 描述 |
+|:---:|---|
+| **机器人配置** | - 上传URDF/Xacro文件<br>- 配置关节限制、初始位置<br>- 工具中心点偏移<br>- 兼容第三方机械臂 |
+| **运动规划** | - RRT*、CHOMP算法生成无碰撞轨迹<br>- 解析求解器（阻尼最小二乘法、Levenberg-Marquardt、IK track）<br>- 自碰撞和环境碰撞检测<br>- 工作空间分析和关节限制验证 |
+| **机器人编程语言** | - 执行G代码命令（PTP、LIN、CIRC、HOME、DELAY、TOOL、M280）<br>- 示教编程<br>- Text2gcode绘图任务 |
+| **轨迹优化** | - 笛卡尔空间：线性插值和三次B样条<br>- 关节空间：梯形、S曲线和多项式 |
+| **仿真器** | - 基于PyBullet的仿真环境<br>- 支持导入URDF/STL/OBJ格式对象和内置几何形状<br>- 工具中心点偏移和基座位置配置 |
 
-### 通信协议
-开源协议接口，支持UART、CAN、TCP/IP等多种通信方式
 
-### ROS支持
-提供URDF文件下载，支持ROS1/ROS2环境配置和MoveIt集成，推荐使用ROS1 Noetic
-
-### 运动学
-noman-app后端：
-- **运动规划器**: RRT*、CHOMP算法，支持求解器（阻尼最小二乘法、Levenberg-Marquardt、IK track）
-- **碰撞模块**: 自碰撞和环境碰撞检测
-- **工作空间分析**: 可达工作空间计算和关节限制验证
-
-### 视觉
-相机内参标定、手眼变换矩阵、物体识别、颜色检测和自动抓取操作，提供实时视觉反馈
-
-### 机器人编程语言
-执行G代码命令（PTP、LIN、CIRC、HOME、DELAY、TOOL、M280），示教编程和text2gcode绘图任务
-
-### 轨迹优化器
-高级轨迹优化方法包括：
-- **笛卡尔空间**: 线性插值、三次B样条和混合优化
-- **关节空间**: 梯形和S曲线多项式优化
-
-### 固件管理
-支持ESP32/Arduino固件自动更新和自定义固件上传
-
-### 仿真器
-基于物理的碰撞检测仿真，支持URDF模型和TCP/基座位置配置
-
-### AI助手 (Majardomo)
-语音控制、任务分解和知识库问答功能（开发中）
 
 ## 支持
 
