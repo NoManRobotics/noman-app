@@ -1,7 +1,7 @@
 #include <Servo.h>
 
 // version check
-#define FIRMWARE_VERSION "2.0.0"
+#define FIRMWARE_VERSION "3.0.0"
 
 // define servo number and pins
 const int numServos = {{NUM_SERVOS}}; 
@@ -12,11 +12,24 @@ const float jointLimits[numServos][2] = {
 };
 const int jointHomePositions[numServos] = { {{JOINT_HOME_POSITIONS}} };  // 每个关节的初始位置
 
+// Gear ratios for each joint (default 1.0, negative values for reversed direction)
+// Modify these values if your robot has gear ratios on specific joints
+float gearRatios[numServos];
+
 // create servo objects
 Servo servos[numServos];
-Servo gripperServo;  // 夹爪舵机
+Servo gripperServo;  // gripper servo
 
-// trackers
+// End Effector Type
+struct EOAT_Type {
+    uint8_t type;          // 0: GRIPPER, 1: PEN_HOLDER, 2: VACUUM_PUMP
+    uint8_t pins[4];       // multiple IO pins that the tool may use
+    uint8_t pin_count;     // actual number of pins used
+    int state;             // tool state (gripper: 90-180 degrees, pump: 0-1)
+};
+EOAT_Type currentEOAT;
+
+// Control parameters
 bool isExecute = false; 
 bool isRecordingOnceJoints = false;
 bool isRecordingOnceTool = false;
@@ -24,22 +37,30 @@ bool isRecording = false;
 bool isMicroStep = false;
 bool isMoveTool = false;
 
-// joint var
 float targetAngles[numServos];
 float currentAngles[numServos];  
 float tmpAngles[numServos];
 
-// tool var
+// M280 command tracking
 int targetToolState = 0;
-int tmpToolState = 0;
-int currentToolState = 90;  // 简单的工具状态，默认夹爪90度
 
 int time_delay = 0;
 int time_elapse = 0;
 
-// 添加新的速度控制变量
-float jointSpeedFactors[numServos]; // 每个关节独立的速度系数，将在setup()中初始化为1.0
-const unsigned long BASE_MOTION_DURATION = 1500;
+// Command queue for buffering multiple EXEC commands
+#define CMD_QUEUE_SIZE 45
+struct CommandBuffer {
+    float angles[numServos];
+    bool valid;
+};
+CommandBuffer commandQueue[CMD_QUEUE_SIZE];
+int queueHead = 0;  // where to read from
+int queueTail = 0;  // where to write to
+int queueCount = 0; // number of commands in queue
+
+// speed factors for each motor
+float jointSpeedFactors[numServos];
+const unsigned long BASE_MOTION_DURATION = 900;
 
 // motion state of joint
 struct MotionState {
@@ -63,15 +84,77 @@ const float MIN_STEP = 1.5f;     // minimum step degree
 
 /* ------------------------------------------------------------------------------ Helper Functions */
 
-// 将输入角度映射到舵机实际角度范围
+// Queue helper functions
+bool isQueueFull() {
+    return queueCount >= CMD_QUEUE_SIZE;
+}
+
+bool isQueueEmpty() {
+    return queueCount == 0;
+}
+
+bool enqueueCommand(float angles[]) {
+    if (isQueueFull()) {
+        return false;
+    }
+    
+    // copy angles to queue
+    for (int i = 0; i < numServos; i++) {
+        commandQueue[queueTail].angles[i] = angles[i];
+    }
+    commandQueue[queueTail].valid = true;
+    
+    // move tail pointer
+    queueTail = (queueTail + 1) % CMD_QUEUE_SIZE;
+    queueCount++;
+    
+    return true;
+}
+
+bool dequeueCommand(float angles[]) {
+    if (isQueueEmpty()) {
+        return false;
+    }
+    
+    // copy angles from queue
+    for (int i = 0; i < numServos; i++) {
+        angles[i] = commandQueue[queueHead].angles[i];
+    }
+    commandQueue[queueHead].valid = false;
+    
+    // move head pointer
+    queueHead = (queueHead + 1) % CMD_QUEUE_SIZE;
+    queueCount--;
+    
+    return true;
+}
+
+// map input angle to servo actual angle range
 float mapAngle(float angle, int servoIndex) {
-  // 确保角度在该舵机的有效范围内
+  // ensure angle is within valid range for this servo
   return constrain(angle, jointLimits[servoIndex][0], jointLimits[servoIndex][1]);
 }
 
 void setServoPosition(int servoIndex, float position) {
-  float mappedAngle = mapAngle(position, servoIndex);
-  servos[servoIndex].write((int)mappedAngle);
+  if (servoIndex < 0 || servoIndex >= numServos) return;
+  
+  float actualPosition = position * gearRatios[servoIndex];
+  
+  // Apply gear ratio to limits as well
+  float actualLower = jointLimits[servoIndex][0] * gearRatios[servoIndex];
+  float actualUpper = jointLimits[servoIndex][1] * gearRatios[servoIndex];
+  
+  // If gear ratio is negative (reversed direction), swap limits
+  if (gearRatios[servoIndex] < 0) {
+    float temp = actualLower;
+    actualLower = actualUpper;
+    actualUpper = temp;
+  }
+  
+  // Constrain to actual limits
+  actualPosition = constrain(actualPosition, actualLower, actualUpper);
+  
+  servos[servoIndex].write((int)actualPosition);
 }
 
 void setGripperPosition(float position) {
@@ -79,7 +162,7 @@ void setGripperPosition(float position) {
   gripperServo.write((int)mappedAngle);
 }
 
-// 修改 smoothInterpolation 函数，使用 sin² 插值
+// sin² interpolation
 float smoothInterpolation(float start, float target, float progress) {
     if (progress <= 0.0f) return start;
     if (progress >= 1.0f) return target;
@@ -145,7 +228,7 @@ float moveMotor(float targetDegree, float curDegree, int id, bool fake) {
             jointStates[id].targetPos = targetDegree;
             jointStates[id].startTime = millis();
             
-            // 使用全局统一时间或独立时间
+            // use global unified time or independent time
             if (globalMotion.syncMode && globalMotion.globalDuration > 0) {
                 jointStates[id].duration = globalMotion.globalDuration;
             } else {
@@ -188,36 +271,77 @@ int controlGripper(float state, bool fake) {
     return (int)angle;
 }
 
+// Convert gripper distance to motor angle for M280 command
+int gripperDistanceToAngle(float distance) {
+    return (int)(90 + (distance / 0.008f) * 90);
+}
+
+// Convert gripper motor angle back to original distance value for M280 command
+float gripperAngleToDistance(int motorAngle) {
+    return ((float)(motorAngle - 90) / 90.0f) * 0.008f;
+}
+
+int controlPump(int state, bool fake) {
+    // For standard servo library, pump control is simplified
+    // In real implementation, you would control digital pins
+    if (currentEOAT.state == state) {
+      return state;
+    }
+
+    if (!fake) {
+      // Implement pump control logic here if needed
+      // This is a placeholder for compatibility
+    }
+
+    return state;
+}
+
 void setup() {
   delay(1000);
   Serial.begin(115200);
   
-  // 初始化所有舵机
+  // initialize gear ratios to 1.0 (no gear ratio by default)
+  for(int i = 0; i < numServos; i++) {
+    gearRatios[i] = 1.0f;
+  }
+  
+  // initialize all servos
   for (int i = 0; i < numServos; i++) {
     servos[i].attach(mtrPins[i]);
-    // 使用每个舵机的初始位置
+    // use initial position for each servo
     currentAngles[i] = jointHomePositions[i];
     targetAngles[i] = jointHomePositions[i];
     tmpAngles[i] = jointHomePositions[i];
     jointStates[i].startPos = jointHomePositions[i];
     jointStates[i].targetPos = jointHomePositions[i];
     jointStates[i].isMoving = false;
-    jointSpeedFactors[i] = 1.0f; // 初始化速度因子为1.0
+    jointSpeedFactors[i] = 1.0f; // initialize speed factor to 1.0
     setServoPosition(i, jointHomePositions[i]);
   }
   
-  // 初始化夹爪舵机
+  // initialize end effector (default configuration is gripper)
+  currentEOAT.type = 0;
+  currentEOAT.pins[0] = gripperPin;
+  currentEOAT.pin_count = 1;
   gripperServo.attach(gripperPin);
   targetToolState = 90;
-  currentToolState = controlGripper(targetToolState, false);
+  currentEOAT.state = controlGripper(targetToolState, false);
   
   delay(1000);
   
-  // 初始化全局运动状态
+  // initialize global motion state
   globalMotion.isNewMotion = false;
   globalMotion.globalDuration = 0;
   globalMotion.activeJoints = 0;
   globalMotion.syncMode = true;
+
+  // initialize command queue
+  queueHead = 0;
+  queueTail = 0;
+  queueCount = 0;
+  for (int i = 0; i < CMD_QUEUE_SIZE; i++) {
+    commandQueue[i].valid = false;
+  }
 }
 
 void loop() {
@@ -225,7 +349,12 @@ void loop() {
   if (Serial.available()) {
     command = Serial.readStringUntil('\n');
     
-    if (command.startsWith("DELAY,")) {
+    if (command == "VERC") {
+      Serial.println("INFOS");
+      Serial.println("VER," + String(FIRMWARE_VERSION));
+      Serial.println("Universal Servo Controller");
+      Serial.println("INFOE");
+    } else if (command.startsWith("DELAY,")) {
       String param = command.substring(6);
       if (param.startsWith("S")) { 
           float seconds = param.substring(1).toFloat();
@@ -241,7 +370,7 @@ void loop() {
       isRecordingOnceJoints = false;
       isRecordingOnceTool = false;
 
-      // 重置targetAngles为当前角度，防止意外移动
+      // reset targetAngles to current angles to prevent accidental movement
       for (int i = 0; i < numServos; i++) {
         currentAngles[i] = targetAngles[i];
       }
@@ -258,23 +387,97 @@ void loop() {
       }
       
       isMicroStep = true;
+    } else if (command.startsWith("TOOL[GRIPPER]")) {
+      currentEOAT.type = 0;
+      currentEOAT.pin_count = 1;
+      currentEOAT.state = 90;
+      currentEOAT.pins[0] = gripperPin;
+      
+      Serial.println("CP2");
+    } else if (command.startsWith("TOOL[PEN]")) {  // pen holder does not need IO
+      currentEOAT.type = 1;
+      currentEOAT.pin_count = 0;
+      currentEOAT.state = 0;
+      
+      Serial.println("CP2");
+    } else if (command.startsWith("TOOL[PUMP]")) {
+      currentEOAT.type = 2;
+      currentEOAT.pin_count = 0;
+      currentEOAT.state = 0;
+      
+      Serial.println("CP2");
     } else if (command.startsWith("M280")) {
-      // 格式: M280,<state> 其中state是工具的目标状态
-      int commaIndex = command.indexOf(',');
-      if (commaIndex != -1) {
-        String stateStr = command.substring(commaIndex + 1);
-        targetToolState = stateStr.toInt();
+      // format: M280,<value1>[,<value2>] where value1 and value2 are optional
+      int firstComma = command.indexOf(',');
+      if (firstComma != -1) {
+        int secondComma = command.indexOf(',', firstComma + 1);
+        
+        if (secondComma != -1) {
+          // there are two values: M280,value1,value2
+          float value1 = command.substring(firstComma + 1, secondComma).toFloat();
+          float value2 = command.substring(secondComma + 1).toFloat();
+          
+          if (currentEOAT.type == 0) { // gripper mode
+            // for gripper, use the first value (usually the same) and convert to motor angle
+            targetToolState = gripperDistanceToAngle(value1);
+          } else if (currentEOAT.type == 2) { // pump mode
+            // for pump, use the first value as the state
+            targetToolState = (int)value1;
+          }
+        } else {
+          // only one value case: M280,value
+          float value = command.substring(firstComma + 1).toFloat();
+          
+          if (currentEOAT.type == 0) { // gripper mode
+            // for gripper, convert the slider length to motor angle
+            targetToolState = gripperDistanceToAngle(value);
+          } else if (currentEOAT.type == 2) { // pump mode
+            // for pump, use the value as the state
+            targetToolState = (int)value;
+          } else {
+            // other mode, use the value directly
+            targetToolState = (int)value;
+          }
+        }
+        
         isMoveTool = true;
       }
     } else if (command == "EXEC") {
       String angleCommand = Serial.readStringUntil('\n');
-      processAngleCommand(angleCommand);
+      // Process the incoming command as comma-separated angle values
+      int startIndex = 0;
+      bool parseSuccess = true;
       
-      // 计算全局运动参数
-      globalMotion.globalDuration = calculateGlobalMotionDuration(targetAngles, currentAngles);
-      globalMotion.isNewMotion = true;
+      for (int i = 0; i < numServos; i++) {
+        int nextIndex = angleCommand.indexOf(',', startIndex);
+        if (nextIndex == -1 && i < numServos - 1) {
+            parseSuccess = false;
+            break; // Improper formatting of incoming data
+        }
+        String angleStr = (nextIndex == -1) ? angleCommand.substring(startIndex) : angleCommand.substring(startIndex, nextIndex);
+        tmpAngles[i] = mapAngle(angleStr.toFloat(), i);
+        startIndex = nextIndex + 1;
+      }
       
-      isExecute = true;
+      if (parseSuccess) {
+        // Try to add command to queue
+        if (enqueueCommand(tmpAngles)) {
+          // Successfully added to queue, send immediate confirmation
+          Serial.println("CP0");
+          
+          // If not currently executing, start execution with the first queued command
+          if (!isExecute && queueCount > 0) {
+            if (dequeueCommand(targetAngles)) {
+              globalMotion.globalDuration = calculateGlobalMotionDuration(targetAngles, currentAngles);
+              globalMotion.isNewMotion = true;
+              isExecute = true;
+            }
+          }
+        } else {
+          // Queue is full, send error
+          Serial.println("QFULL");
+        }
+      }
     } else if (command == "RECONCEJ") {
       isRecordingOnceJoints = true;
     } else if (command == "RECONCET") {
@@ -313,24 +516,6 @@ void loop() {
             startIndex = endIndex + 1;
         }
     }
-    
-    // 兼容旧命令格式
-    else if (command == "RECONCE") {
-      isRecordingOnceJoints = true;
-    } else if (command == "START") {
-      isRecording = true;
-    } else if (command == "STOP") {
-      isRecording = false;
-    } else if (command == "EXEC_ONCE") {
-      // 处理延时参数
-      String delayCommand = Serial.readStringUntil('\n');
-      time_delay = delayCommand.toInt();
-      time_elapse = 0;
-      
-      // 处理角度命令
-      String angleCommand = Serial.readStringUntil('\n');
-      processAngleCommand(angleCommand);
-    }
   }
 
   bool allServosDone = true;
@@ -340,35 +525,38 @@ void loop() {
   if (isMicroStep) {                            // REP
     for (int i = 0; i < numServos; i++) {
       setServoPosition(i, targetAngles[i]);
-      currentAngles[i] = targetAngles[i]; // 更新当前角度
+      currentAngles[i] = targetAngles[i]; // update current angle
     }
     Serial.println("CP1");
     isMicroStep = false;
   } else if (isExecute) {                             // EXEC
     if (isRecording) {
-      // 在录制期间，使用tmpAngles类似原来的MOVEONCE行为
+      // during recording, use tmpAngles
       for (int i = 0; i < numServos; i++) {
         tmpAngles[i] = moveMotor(targetAngles[i],tmpAngles[i],i,false);
       }
     } else {
-      // 正常执行模式
+      // normal execution mode
       for (int i = 0; i < numServos; i++) {
         currentAngles[i] = moveMotor(targetAngles[i],currentAngles[i],i,false);
       }
     }
   } else if (isMoveTool) {                            // M280
-    if (!isRecording) {
-      currentToolState = controlGripper(targetToolState, false);
-    } else {
-      tmpToolState = controlGripper(targetToolState, false);
+    if (currentEOAT.type == 0) {
+      currentEOAT.state = controlGripper(targetToolState, false);
+    } else if (currentEOAT.type == 2) {
+      currentEOAT.state = controlPump(targetToolState, false);
     }
-    isMoveTool = false;
   } else if (isRecordingOnceJoints) {                 // RECONCEJ
     for (int i = 0; i < numServos; i++) {
       currentAngles[i] = moveMotor(targetAngles[i],currentAngles[i],i,true);
     }
   } else if (isRecordingOnceTool) {                   // RECONCET
-    currentToolState = controlGripper(targetToolState, true);
+    if (currentEOAT.type == 0) {
+      currentEOAT.state = controlGripper(targetToolState, true);
+    } else if (currentEOAT.type == 2) {
+      currentEOAT.state = controlPump(targetToolState, true);
+    }
   }
 
   // check if all joint motors have reached target angles
@@ -380,14 +568,25 @@ void loop() {
   }
 
   // check if tool has reached target state
-  if (currentToolState == targetToolState) {
+  if (currentEOAT.state == targetToolState) {
     isMoveToolDone = true;
+    if (isMoveTool) {
+      Serial.println("TP0");
+      isMoveTool = false;
+    }
   }
 
-  // callbacks
-  if (allServosDone) {
-    if (isExecute) {
-      Serial.println("CP0");
+  // Check if current motion is complete and handle queue
+  if (allServosDone && isExecute) {
+    // Try to load next command from queue
+    if (dequeueCommand(targetAngles)) {
+      // Successfully loaded next command from queue
+      // Calculate new motion parameters
+      globalMotion.globalDuration = calculateGlobalMotionDuration(targetAngles, currentAngles);
+      globalMotion.isNewMotion = true;
+      // Continue executing (don't set isExecute to false)
+    } else {
+      // Queue is empty, stop executing
       isExecute = false;
     }
   }
@@ -405,76 +604,21 @@ void loop() {
           }
       }
     } else if (allServosDone && isRecordingOnceJoints) {
-      Serial.println("RP0");
+      Serial.println("CP0");
       isRecordingOnceJoints = false;
     }
     
     if (isMoveToolDone && isRecordingOnceTool) {
       Serial.print("M280,");
-      Serial.println(currentToolState);
-      Serial.println("RP1");
+      if (currentEOAT.type == 0) { // gripper - convert back to distance
+        Serial.println(gripperAngleToDistance(currentEOAT.state));
+      } else {
+        Serial.println(currentEOAT.state);
+      }
+      Serial.println("TP0");
       isRecordingOnceTool = false;
-    }
-    
-    // 兼容旧的录制逻辑
-    else if (time_elapse <= time_delay) {
-      // 处理EXEC_ONCE的延时输出
-      time_elapse += 0.005;
-      outputDesiredAngles();
     }
   }
   
   delay(5);
-}
-
-// 处理角度命令（确保数据格式正确）
-void processAngleCommand(String command) {
-  int startIndex = 0;
-  for (int i = 0; i < numServos; i++) {
-    int nextIndex = command.indexOf(',', startIndex);
-    if (nextIndex == -1 && i < numServos - 1) {
-      return;
-    }
-    String angleStr = (nextIndex == -1) ? command.substring(startIndex) : command.substring(startIndex, nextIndex);
-    targetAngles[i] = mapAngle(angleStr.toFloat(), i);
-    startIndex = nextIndex + 1;
-  }
-}
-
-// 处理角度命令到临时数组
-void processAngleCommandToTmp(String command) {
-  int startIndex = 0;
-  for (int i = 0; i < numServos; i++) {
-    int nextIndex = command.indexOf(',', startIndex);
-    if (nextIndex == -1 && i < numServos - 1) {
-      return;
-    }
-    String angleStr = (nextIndex == -1) ? command.substring(startIndex) : command.substring(startIndex, nextIndex);
-    targetAngles[i] = mapAngle(angleStr.toFloat(), i);
-    startIndex = nextIndex + 1;
-  }
-}
-
-// 输出当前角度
-void outputCurrentAngles() {
-  Serial.print("REC,");  //添加 REC 验证
-  for (int i = 0; i < numServos; i++) {
-    Serial.print(currentAngles[i]);
-    if (i < numServos - 1) {
-      Serial.print(",");
-    }
-  }
-  Serial.println();
-}
-
-// 输出目标角度
-void outputDesiredAngles() {
-  Serial.print("REC,");  //添加 REC 验证
-  for (int i = 0; i < numServos; i++) {
-    Serial.print(targetAngles[i]);
-    if (i < numServos - 1) {
-      Serial.print(",");
-    }
-  }
-  Serial.println();
 }

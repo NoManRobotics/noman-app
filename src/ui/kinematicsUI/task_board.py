@@ -941,15 +941,37 @@ class TaskBoard:
                 joint_angles_deg = np.degrees(waypoint)
                 
                 if is_connected:
-                    # 发送关节运动命令
-                    self.kinematics_frame.protocol_class.send("EXEC\n")
+                    # 准备命令
                     joint_command = ",".join(f"{angle:.2f}" for angle in joint_angles_deg) + "\n"
-                    self.kinematics_frame.protocol_class.send(joint_command)
-
-                    # 等待执行完成
-                    _, isReplied = self.kinematics_frame.protocol_class.receive(timeout=5, expected_signal="CP0")
-                    if not isReplied:
-                        self.kinematics_frame.update_terminal(f"关节执行超时，路径点 {i+1}")
+                    
+                    # 重试机制：如果队列满，等待并重试
+                    max_retries = 2  # 最多重试100次
+                    retry_count = 0
+                    command_sent = False
+                    
+                    while retry_count < max_retries:
+                        # 发送关节运动命令
+                        self.kinematics_frame.protocol_class.send("EXEC\n")
+                        self.kinematics_frame.protocol_class.send(joint_command)
+                        
+                        # 等待执行完成
+                        response, isReplied = self.kinematics_frame.protocol_class.receive(timeout=5, expected_signal="CP0")
+                        
+                        if isReplied:
+                            # 命令成功进入队列
+                            command_sent = True
+                            break
+                        elif response and any("QFULL" in str(r) for r in response):
+                            # 队列满，等待后重试
+                            retry_count += 1
+                            time.sleep(0.05)  # 等待50ms让队列有机会处理
+                        else:
+                            # 其他错误
+                            self.kinematics_frame.update_terminal(f"关节执行超时，路径点 {i+1}")
+                            return
+                    
+                    if not command_sent:
+                        self.kinematics_frame.update_terminal(f"队列持续满载，无法执行路径点 {i+1}")
                         return
                 else:
                     # 模拟执行延时

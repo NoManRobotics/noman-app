@@ -690,14 +690,32 @@ HOME; 回到原点
                             joint_angles = np.degrees([float(angle) for angle in parts[1:]])
                             joint_angles = [angle for angle in joint_angles]
                             if self.kinematics_frame.protocol_class.is_connected():
-                                self.kinematics_frame.protocol_class.send(b"EXEC\n")
-                                
                                 command = ",".join(f"{angle:.2f}" for angle in joint_angles)+'\n'
-                                self.kinematics_frame.protocol_class.send(command)
+                                
+                                # 重试机制：如果队列满，等待并重试
+                                max_retries = 2
+                                retry_count = 0
                                 start_time = time.time()
-                                _, isReplied = self.kinematics_frame.protocol_class.receive(timeout=5, expected_signal="CP0")
-                                if not isReplied:
-                                    raise Exception(f"执行超时 - 第{self.current_cline}行: {self.current_command}")
+                                
+                                while retry_count < max_retries:
+                                    self.kinematics_frame.protocol_class.send(b"EXEC\n")
+                                    self.kinematics_frame.protocol_class.send(command)
+                                    response, isReplied = self.kinematics_frame.protocol_class.receive(timeout=5, expected_signal="CP0")
+                                    
+                                    if isReplied:
+                                        # 命令成功进入队列
+                                        break
+                                    elif response and any("QFULL" in str(r) for r in response):
+                                        # 队列满，等待后重试
+                                        retry_count += 1
+                                        time.sleep(0.05)  # 等待50ms让队列有机会处理
+                                    else:
+                                        # 其他错误，抛出异常
+                                        raise Exception(f"执行超时 - 第{self.current_cline}行: {self.current_command}")
+                                
+                                if retry_count >= max_retries:
+                                    raise Exception(f"队列持续满载，无法执行 - 第{self.current_cline}行: {self.current_command}")
+                                
                                 end_time = time.time()
                                 execution_time = end_time - start_time
                                 self.update_gcode_terminal(f"  ** 耗时: {execution_time:.4f} s")
