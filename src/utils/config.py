@@ -6,6 +6,10 @@ from .resource_loader import ResourceLoader
 
 # 全局配置类
 class Config:
+    ''' Application Version '''
+    version = "1.1.1"
+    release_date = "2025-10-19"
+    
     ''' Language Config '''
     current_lang = None
     current_lang_name = "English"  # 记录当前语言名称

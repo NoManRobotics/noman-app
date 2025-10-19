@@ -1,9 +1,12 @@
 import os
 import datetime
 import webbrowser
+import urllib.request
+import json
 from PIL import Image
 import customtkinter as ctk
 import tkinter.ttk as ttk
+from tkinter import messagebox
 
 from utils.resource_loader import ResourceLoader
 from utils.config import Config
@@ -32,8 +35,8 @@ class HelpFrame(ctk.CTkFrame):
         )
         
         self.about_items = [
-            ("Version", "1.0.0"),
-            ("Release date", "2025-9-25"),
+            ("Version", Config.version),
+            ("Release date", Config.release_date),
             ("Developer", "NoMan Robotics"),
             ("Features", "Motion Planning, Trajectory Optimisation, Simulation, G-code, Trajectory Optimization, LLM, Vision"),
             ("OS Platforms", "Windows>=10, Ubuntu>=20.04, MacOS>=13"),
@@ -98,7 +101,7 @@ class HelpFrame(ctk.CTkFrame):
         total_height = (num_rows * row_height) + header_height
 
         self.about_tree = ttk.Treeview(self.about_frame, columns=("Item", "Value"), show="headings", style="Treeview", height=num_rows)
-        self.about_tree.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=30, pady=(30,30))
+        self.about_tree.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=30, pady=(30,10))
 
         self.about_tree.heading("Item", text=Config.current_lang["item"])
         self.about_tree.heading("Value", text=Config.current_lang["value"])
@@ -110,6 +113,16 @@ class HelpFrame(ctk.CTkFrame):
 
         # 设置树状视图的固定高度
         self.about_tree.configure(height=num_rows)
+
+        # 添加检查更新按钮
+        self.check_update_button = ctk.CTkButton(
+            self.about_frame,
+            text=Config.current_lang["check_update"],
+            command=self.check_for_updates,
+            width=135,
+            height=30
+        )
+        self.check_update_button.grid(row=2, column=0, columnspan=3, pady=(10,15), sticky="e", padx=20)
 
         self.about_frame.grid_rowconfigure(1, weight=1)
         self.about_frame.grid_columnconfigure(0, weight=1)
@@ -174,12 +187,6 @@ class HelpFrame(ctk.CTkFrame):
         self.contact_frame.grid_columnconfigure(1, weight=1)
         self.contact_frame.grid_columnconfigure(2, weight=1)
 
-    def open_url(self, url):
-        webbrowser.open(url)
-
-    def open_email(self, email):
-        webbrowser.open(f"mailto:{email}")
-    
     def setup_trademark_frame(self):
         self.trademark_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.trademark_frame.grid(row=3, column=0, padx=20, pady=10, sticky="sew")
@@ -194,6 +201,99 @@ class HelpFrame(ctk.CTkFrame):
         )
         self.logo_label = ctk.CTkLabel(self.trademark_frame, image=self.logo_image, text="")
         self.logo_label.pack(side="right", padx=10, pady=10)
+
+    def open_url(self, url):
+        webbrowser.open(url)
+
+    def open_email(self, email):
+        webbrowser.open(f"mailto:{email}")
+    
+    def check_for_updates(self):
+        """检查 GitHub 上的最新版本"""
+        try:
+            # 显示检查中的状态
+            self.check_update_button.configure(state="disabled", text=Config.current_lang.get("checking", "Checking..."))
+            self.update()
+            
+            # GitHub API URL
+            api_url = "https://api.github.com/repos/NoManRobotics/noman-app/releases/latest"
+            
+            # 创建请求
+            request = urllib.request.Request(api_url)
+            request.add_header('User-Agent', 'NoMan-App-Update-Checker')
+            
+            # 获取最新版本信息
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode())
+                latest_version = data.get('tag_name', '').lstrip('v')
+                release_url = data.get('html_url', 'https://github.com/NoManRobotics/noman-app/releases')
+                
+            # 比较版本号
+            current_version = Config.version
+            
+            if self.compare_versions(latest_version, current_version) > 0:
+                # 有新版本
+                message = Config.current_lang.get(
+                    "update_available", 
+                    f"New version {latest_version} is available!\nYour current version: {current_version}\n\nWould you like to visit the download page?"
+                ).format(latest_version=latest_version, current_version=current_version)
+                
+                result = messagebox.askyesno(
+                    Config.current_lang.get("update_title", "Update Available"),
+                    message
+                )
+                
+                if result:
+                    webbrowser.open(release_url)
+            else:
+                # 已是最新版本
+                message = Config.current_lang.get(
+                    "up_to_date",
+                    f"You are using the latest version {current_version}!"
+                ).format(current_version=current_version)
+                
+                messagebox.showinfo(
+                    Config.current_lang.get("update_title", "Update Check"),
+                    message
+                )
+                
+        except urllib.error.URLError:
+            messagebox.showerror(
+                Config.current_lang.get("error", "Error"),
+                Config.current_lang.get("network_error", "Unable to connect to GitHub. Please check your internet connection.")
+            )
+        except Exception as e:
+            messagebox.showerror(
+                Config.current_lang.get("error", "Error"),
+                Config.current_lang.get("update_check_error", f"Error checking for updates: {str(e)}")
+            )
+        finally:
+            # 恢复按钮状态
+            self.check_update_button.configure(state="normal", text=Config.current_lang.get("check_update", "Check Update"))
+    
+    def compare_versions(self, version1, version2):
+        """
+        比较两个版本号
+        返回: 1 if version1 > version2, -1 if version1 < version2, 0 if equal
+        """
+        try:
+            v1_parts = [int(x) for x in version1.split('.')]
+            v2_parts = [int(x) for x in version2.split('.')]
+            
+            # 补齐长度
+            max_len = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_len - len(v1_parts)))
+            v2_parts.extend([0] * (max_len - len(v2_parts)))
+            
+            # 逐位比较
+            for v1, v2 in zip(v1_parts, v2_parts):
+                if v1 > v2:
+                    return 1
+                elif v1 < v2:
+                    return -1
+            return 0
+        except:
+            return 0
 
     def add_tab_content(self, tab, content):
         textbox = ctk.CTkTextbox(tab, wrap="word", fg_color="#B3B3B3", text_color="black")
@@ -304,6 +404,7 @@ class HelpFrame(ctk.CTkFrame):
         self.website_button.configure(text=Config.current_lang["website"])
         self.email_button.configure(text=Config.current_lang["email"])
         self.about_label.configure(text=Config.current_lang["app_information"])
+        self.check_update_button.configure(text=Config.current_lang["check_update"])
 
         self.update_about_tree()
 
