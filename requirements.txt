@@ -1,8 +1,7 @@
 setuptools>=68.0.0
 numpy>=1.19.0
 pybullet==3.2.6
-opencv-python>=4.5.0
-opencv_contrib_python==4.10.0.84
+opencv-contrib-python>=4.10.0,<4.11.0
 customtkinter==5.2.2
 matplotlib>=3.3.0
 scipy>=1.10.0
